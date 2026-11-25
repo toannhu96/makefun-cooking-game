@@ -1,79 +1,86 @@
-// The screenshot scenes behind ?shot=start|play|end. Each one plays the real rules forward from a
-// fresh world for a fixed number of steps, steered by a simple autopilot (look ahead each way the
-// paddle could move, keep clear of blocks, chase the lowest coin when that is safe), so the frame
-// is what a short game really looks like and the same seed always gives the same frame.
-import { FIELD, PLAYER, STEP } from './config.js';
-import { EVENT_OVER, KIND_BLOCK } from './world.js';
+// The screenshot scenes behind ?shot=start|play|end. Each plays the real rules forward from the seed
+// with the demo chef, so the frame is a real moment of a real shift and a seed always gives the same
+// frame. The play scene looks for the brief's mid-rush moment (0:48 on the clock, two open tickets,
+// a three-layer burger on the board, a plate waiting on the pass, a patty on the grill, about $37)
+// across a few demo-chef paces, then replays the best one to that exact step.
+import { RECIPES, ROUND_SECONDS, STEP } from './config.js';
+import { autoChefControls, cookAhead, createAutoChef } from './autochef.js';
+import { grillCounts } from './kitchen.js';
+import { openTickets, rushStage } from './recipes.js';
+import { createRound, stepRound } from './round.js';
 import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
-const END_LIMIT_SECONDS = 600;
-/**
- * How far ahead, in seconds, the autopilot checks each way it could move: the play scene's pilot
- * looks well ahead and keeps all its lives; the end scene's looks only a moment ahead, so it is
- * caught out once the blocks speed up, as a hurried player is.
- */
-const HORIZON_PLAY = 0.7;
-const HORIZON_END = 0.25;
-const SAMPLE = 1 / 30;
-const DIRECTIONS = [0, -1, 1];
-/** Extra room, each side, it keeps between the paddle and a block. */
-const MARGIN = 10;
+const PACES = [0.1, 0.14, 0.18, 0.22, 0.26];
+const PREP_AT = [76, 72, 68, 64, 60];
+const TARGET = { clock: 48, cash: 37 };
 
-/** Seconds until moving in `direction` (-1, 0, 1) runs the paddle into a block; Infinity when it never does. */
-function timeToHit(state, direction, horizon) {
-  const player = state.player;
-  for (let t = SAMPLE; t <= horizon; t += SAMPLE) {
-    const x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * t));
-    for (let index = 0; index < state.items.length; index += 1) {
-      const item = state.items[index];
-      if (!item.active || item.kind !== KIND_BLOCK) continue;
-      const y = item.y + item.speed * t;
-      if (y + item.height > player.y && y < player.y + player.height && item.x < x + player.width + MARGIN && item.x + item.width > x - MARGIN) return t;
-    }
-  }
-  return Infinity;
+/** A tier-appropriate recipe nobody has ordered yet, to cook ahead for the pass. */
+function recipeToPrep(round) {
+  const stage = rushStage(round.elapsed);
+  const ordered = new Set(round.tickets.map((ticket) => ticket.recipe));
+  return RECIPES.find((recipe) => recipe.tier <= stage.tier && !ordered.has(recipe)) ?? RECIPES[0];
 }
 
-/** Of the safe ways to move, the one toward the lowest coin (or the centre); else the one that is hit last. */
-function autopilot(state, horizon) {
-  const player = state.player;
-  let coin = null;
-  for (let index = 0; index < state.items.length; index += 1) {
-    const item = state.items[index];
-    if (item.active && item.kind !== KIND_BLOCK && (coin === null || item.y > coin.y)) coin = item;
-  }
-  const target = coin === null ? FIELD.width / 2 : coin.x + coin.width / 2;
-  const centre = player.x + player.width / 2;
-  const wanted = target > centre + 8 ? 1 : target < centre - 8 ? -1 : 0;
-  let best = wanted;
-  let bestTime = timeToHit(state, wanted, horizon);
-  for (let index = 0; index < DIRECTIONS.length && bestTime !== Infinity; index += 1) {
-    const time = timeToHit(state, DIRECTIONS[index], horizon);
-    if (time > bestTime) {
-      bestTime = time;
-      best = DIRECTIONS[index];
-    }
-  }
-  return best;
+/** How close a frame is to the brief's play scene; higher is better. */
+function playScore(round) {
+  const grill = grillCounts(round.kitchen.grill);
+  const open = openTickets(round).length;
+  let score = 0;
+  if (round.board.length === 3) score += 4;
+  if (round.pass.length >= 1) score += 4;
+  score += open === 2 ? 3 : open >= 1 ? 1 : 0;
+  if (grill.raw + grill.cooked > 0) score += 2;
+  return score + 3 - Math.min(3, Math.abs(round.cash - TARGET.cash) / 3);
 }
 
-/**
- * Set `world` to the named scene (start, play or end; any other name is start) and return the
- * screen to draw over it and the best score to show.
- */
-export function stageShot(name, world) {
-  world.reset();
-  if (name !== 'play' && name !== 'end') {
-    for (let index = 0; index < START_SECONDS / STEP; index += 1) world.step(STEP, 0, true);
-    return { screen: SCREEN_TITLE, best: 0 };
+/** Plays one variant; stops at `stopAt` steps, or runs through the 0:48 window and reports its best step. */
+function playVariant(seed, pace, prepAt, stopAt = Infinity) {
+  const round = createRound(seed);
+  const bot = createAutoChef({ pause: pace, holdAt: 3 });
+  let queued = false;
+  let best = { score: -Infinity, step: 0 };
+  for (let step = 1; step <= stopAt; step += 1) {
+    if (!queued && round.timeLeft <= prepAt) {
+      cookAhead(bot, recipeToPrep(round));
+      queued = true;
+    }
+    stepRound(round, STEP, autoChefControls(round, bot, STEP));
+    round.events.length = 0;
+    if (round.timeLeft <= TARGET.clock && round.timeLeft > TARGET.clock - 1) {
+      const score = playScore(round);
+      if (score > best.score) best = { score, step };
+    } else if (round.timeLeft <= TARGET.clock - 1) break;
   }
-  const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
-  const horizon = name === 'end' ? HORIZON_END : HORIZON_PLAY;
-  for (let index = 0; index < limit / STEP; index += 1) {
-    if (world.step(STEP, autopilot(world.state, horizon), false) & EVENT_OVER) break;
+  return { round, best };
+}
+
+function stagePlay(seed) {
+  let pick = null;
+  for (const pace of PACES) {
+    for (const prepAt of PREP_AT) {
+      const { best } = playVariant(seed, pace, prepAt);
+      if (!pick || best.score > pick.score) pick = { ...best, pace, prepAt };
+    }
   }
-  const over = world.state.lives === 0;
-  return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
+  return playVariant(seed, pick.pace, pick.prepAt, pick.step).round;
+}
+
+/** Plays the demo chef from the start for `seconds` (the whole shift when longer than it). */
+function playFor(seed, seconds, pace = 0.12) {
+  const round = createRound(seed);
+  const bot = createAutoChef({ pause: pace });
+  const steps = Math.round(Math.min(seconds, ROUND_SECONDS + 1) / STEP);
+  for (let i = 0; i < steps && !round.over; i += 1) {
+    stepRound(round, STEP, autoChefControls(round, bot, STEP));
+    round.events.length = 0;
+  }
+  return round;
+}
+
+/** The round and screen for a named scene, or null for an unknown name. */
+export function stageShot(name, seed) {
+  if (name === 'start') return { round: playFor(seed, 6), screen: SCREEN_TITLE, time: 0.4 };
+  if (name === 'play') return { round: stagePlay(seed), screen: SCREEN_PLAY, time: 0.7 };
+  if (name === 'end') return { round: playFor(seed, ROUND_SECONDS + 1), screen: SCREEN_OVER, time: 0 };
+  return null;
 }

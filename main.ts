@@ -8,10 +8,6 @@
 // (any genre, any library you vendor under game/, or none), put your 3 or 4 PNG or JPEG screenshots
 // in screenshots/ (the first by name is the cover) and run it.
 //
-// This entry: Between The Buns, a short-order burger diner rush. The shift runs 2:00 on the clock:
-// read the order board, chop lettuce and tomato, grill patties, stack the layers at the build board in
-// the recipe's order, plate it and hand it over the pass before the guest gives up.
-//
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
